@@ -48,10 +48,15 @@ jobs:
         with:
           toolchain: 1.81.0
 
+      # setup-java rejects the build-qualified "21.0.4+7"; "21.0.4" resolves to the
+      # only Temurin 21.0.4 GA build, which the next step asserts.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 21.0.4+7
+          java-version: "21.0.4"
+
+      - name: assert JDK build 21.0.4+7
+        run: java -version 2>&1 | tee /dev/stderr | grep -q '21.0.4+7'
 
       - uses: sbt/setup-sbt@v1
         with:
