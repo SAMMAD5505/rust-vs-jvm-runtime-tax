@@ -132,6 +132,10 @@ if findmnt -n "$MOUNT" >/dev/null; then
   [[ $(readlink -f "$current") == $(readlink -f "$dev") ]] || die "$MOUNT is already mounted from $current, not $dev"
   note "$dev already mounted at $MOUNT"
 else
+  # A partition table with no partitions (e.g. a freshly labelled GPT disk) shows
+  # no children in lsblk; refuse it too rather than formatting over it.
+  if ! pttype=$("${ROOT[@]}" blkid -p -o value -s PTTYPE "$dev"); then pttype=""; fi
+  [[ -z $pttype ]] || die "refusing: $dev has a $pttype partition table"
   if ! fstype=$("${ROOT[@]}" blkid -o value -s TYPE "$dev"); then fstype=""; fi
   if [[ -z $fstype ]]; then
     note "$dev has no filesystem: creating ext4"
@@ -187,7 +191,8 @@ fi
 # ---------------------------------------------------------------- 4. sudoers (drop caches only)
 log "sudoers: $SUDOERS"
 rule="$TARGET_USER ALL=(root) NOPASSWD: /usr/sbin/sysctl vm.drop_caches=3"
-if [[ -f $SUDOERS ]] && "${ROOT[@]}" grep -qxF "$rule" "$SUDOERS"; then
+# /etc/sudoers.d is not readable by a normal user: test and read it as root.
+if "${ROOT[@]}" test -f "$SUDOERS" && "${ROOT[@]}" grep -qxF "$rule" "$SUDOERS"; then
   note "rule present"
 else
   tmp=$(mktemp)
@@ -219,6 +224,12 @@ note "region / AZ     $(imds placement/region) / $(imds placement/availability-z
 note "cores chosen    $(bash "$REPO/docker/pick-cores.sh" 4 2>&1 || true)"
 note "/data device    $(findmnt -n -o SOURCE,FSTYPE "$MOUNT" 2>/dev/null || echo 'not mounted')"
 note "/data free      $(df -h --output=avail "$MOUNT" 2>/dev/null | tail -n1 | tr -d ' ' || echo '?')"
+root_free_gb=$(df -BG --output=avail / | tail -n1 | tr -dc '0-9')
+note "/ free          ${root_free_gb} GB (root EBS: Docker data and results/)"
+if (( root_free_gb < 25 )); then
+  note "WARNING: less than 25 GB free on /. Use a 60 GB root volume (docs/aws.md) or run 'docker builder prune'."
+fi
+note "/var/lib/docker $("${ROOT[@]}" du -sh /var/lib/docker 2>/dev/null | cut -f1 || echo '?')"
 note "cgroup fs       $(stat -fc %T /sys/fs/cgroup)"
 note "docker          $("${ROOT[@]}" docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?')"
 note "drop caches     $(sudo -n -l /usr/sbin/sysctl vm.drop_caches=3 >/dev/null 2>&1 && echo 'allowed' || echo 'NOT allowed')"

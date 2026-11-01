@@ -3,7 +3,8 @@
 # inside a privileged Ubuntu 24.04 container (it formats and mounts devices, so
 # never run it directly on a host). Checks: format blank disk, idempotent re-run,
 # remount without reformat, wiped disk (stop/start) -> reformat + fstab replaced,
-# refusal of a foreign filesystem, refusal of the root device.
+# refusal of a foreign filesystem, of the root device, and of a disk with an
+# empty partition table.
 #
 # Usage: tests/ec2-setup-storage.sh        (needs Docker; uses --privileged)
 set -euo pipefail
@@ -47,6 +48,17 @@ echo "ok 5 refuses a disk with another filesystem"
 
 if setup /dev/overlay 2>/dev/null; then fail "root device was accepted"; fi
 echo "ok 6 refuses the root device"
-losetup -d "$A" "$B"
+
+# A partition table with no partitions: lsblk shows no children, so only the
+# PTTYPE guard can catch it.
+apt-get -qq update >/dev/null && apt-get -qq install -y fdisk >/dev/null
+truncate -s 64M /tmp/c.img; C=$(losetup -f --show /tmp/c.img)
+echo "label: gpt" | sfdisk -q "$C"
+[[ $(lsblk -n -o NAME "$C" | wc -l) == 1 ]] || fail "test setup: expected no partitions on $C"
+if setup "$C" 2>/dev/null; then fail "disk with an empty partition table was accepted"; fi
+[[ $(blkid -p -o value -s PTTYPE "$C") == gpt ]] || fail "partition table was modified"
+[[ -z $(blkid -p -o value -s TYPE "$C" || true) ]] || fail "a filesystem was created over the partition table"
+echo "ok 7 refuses a disk with an empty partition table"
+losetup -d "$A" "$B" "$C"
 echo "PASS"
 '

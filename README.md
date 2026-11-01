@@ -94,6 +94,10 @@ more than 100 GB without `--yes`.
 | Primary | AWS `c6id.4xlarge` On-Demand: 8 physical cores × 2 SMT, Xeon Platinum 8375C, 32 GiB, 950 GB NVMe instance store, Ubuntu 24.04 | `cloud-vm` |
 | Validation | AWS `c6id.metal` On-Demand (same CPU family, bare metal), small preset only | `bare-metal` |
 
+Launch both with a **60 GB gp3 root volume**: Docker images and build cache
+plus `results/` live on the root disk, and only the datasets go on the
+instance store.
+
 **[docs/aws.md](docs/aws.md)** covers launching, setup
 (`scripts/ec2-setup.sh`), running, exporting results before you stop the
 instance, and the metal validation.

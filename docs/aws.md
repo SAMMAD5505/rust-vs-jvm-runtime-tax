@@ -34,8 +34,18 @@ other instance type or OS setup (see *Host gates* below).
   published by Canonical (owner `099720109477`), x86_64. Record the AMI id;
   the harness also records it from instance metadata.
 - **Instance type:** `c6id.4xlarge`.
-- **Root volume:** 30 GB gp3. It holds the OS, Docker images (~1 GB),
-  the repository and `results/`. The datasets go on the instance store.
+- **Root volume:** **60 GB gp3**. Everything except the datasets lives on it:
+  - Docker keeps images, build layers and build cache under
+    `/var/lib/docker`. The two images are ~1 GB, but each `make images`
+    rebuild adds multi-stage build cache: the Rust and sbt builder stages
+    are several GB.
+  - `results/` grows with every run (JFR recordings and their JSON, GC logs,
+    10 Hz samples, batch logs), plus the export archives.
+  - The OS, apt packages and `.venv` take a few GB more.
+
+  30 GB is enough to start but can fill up mid-study, and a full root disk
+  fails runs. `make aws-preflight` and the setup summary warn when `/` has
+  less than 25 GB free. The datasets stay on the instance store.
 - **Instance store:** attached automatically (`/dev/nvme1n1`, model
   "Amazon EC2 NVMe Instance Storage"). It is unformatted at first boot.
 - **Purchasing option:**
@@ -81,6 +91,28 @@ exit                             # log out/in so the docker group applies
 - prints a preflight summary
 
 ## 4. Run
+
+### Spot smoke test (optional, before paying On-Demand)
+
+On a **Spot** `c6id.4xlarge`, after section 3. This checks setup, the gates
+and the run time, and nothing more. Every result lands in a `-smoke`
+directory and is watermarked "SMOKE TEST — NOT FOR PUBLICATION".
+
+```sh
+cd rust-vs-jvm-runtime-tax
+make aws-preflight HOST_CLASS=cloud-vm ALLOW_SPOT=1     # VERDICT cloud-vm PASS expected
+make images
+make datagen PRESET=small
+make calibrate HOST_CLASS=cloud-vm ALLOW_SPOT=1         # -> results/<ts>-calibrate-smoke/
+make export-results                                     # newest results dir -> results/exports/
+# from your machine, then terminate the Spot instance:
+scp -i <key>.pem 'ubuntu@<public-ip>:rust-vs-jvm-runtime-tax/results/exports/rvj-results-*' .
+```
+
+Without `ALLOW_SPOT=1`, the harness refuses timed runs on Spot, which is
+intended. Nothing from a smoke test goes into the paper.
+
+### Paper runs (On-Demand)
 
 ```sh
 cd rust-vs-jvm-runtime-tax

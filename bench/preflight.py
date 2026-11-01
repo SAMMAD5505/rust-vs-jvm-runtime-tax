@@ -17,6 +17,8 @@ from pathlib import Path
 import harness as h
 import hostinfo
 
+ROOT_FREE_WARN_GB = 25
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -63,6 +65,21 @@ def main() -> int:
     if args.data.exists():
         free = shutil.disk_usage(args.data.resolve()).free
         line("free space", f"{free / 1e9:.1f} GB")
+    print("Root disk (Docker data, results/)")
+    root_free = shutil.disk_usage("/").free / 1e9
+    line("/ free", f"{root_free:.1f} GB")
+    if root_free < ROOT_FREE_WARN_GB:
+        line("WARNING", f"less than {ROOT_FREE_WARN_GB} GB free on /: use a 60 GB root volume (docs/aws.md) "
+                        "or reclaim space with `docker builder prune`")
+    docker_root = hostinfo._run("docker", "info", "--format", "{{.DockerRootDir}}") or "/var/lib/docker"
+    du = hostinfo._run("sudo", "-n", "du", "-sh", docker_root)  # root-only directory; may be refused
+    if du:
+        line(docker_root, du.split()[0])
+    else:
+        line(docker_root, "(not readable without root; Docker's own accounting below)")
+        for row in (hostinfo._run("docker", "system", "df", "--format",
+                                  "{{.Type}}: {{.Size}} (reclaimable {{.Reclaimable}})") or "").splitlines():
+            line("", row)
     print("Docker")
     docker = hostinfo.docker_section(cfg["images"])
     line("server", f"{docker['server_version']} (cgroup {docker['cgroup_version']}, driver {docker['cgroup_driver']})")
