@@ -49,9 +49,10 @@ struct Config {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: datagen --out DIR [--preset dev|small|full] [--rows N] [--files N]\n\
+        "usage: datagen --out DIR [--preset dev|small|medium|full] [--rows N] [--files N]\n\
          \x20              [--row-group-size N] [--seed N] [--threads N] [--yes]\n\
-         presets: dev = 1,000,000 rows / 4 files; small = 10,000,000 / 8; full = 950,000,000 / 64"
+         presets: dev = 1,000,000 rows / 4 files; small = 10,000,000 / 8;\n\
+         \x20        medium = 95,000,000 / 16; full = 950,000,000 / 64"
     );
     std::process::exit(2);
 }
@@ -86,6 +87,7 @@ fn parse_args() -> Config {
         None => (1_000_000, 4),
         Some("dev") => (1_000_000, 4),
         Some("small") => (10_000_000, 8),
+        Some("medium") => (95_000_000, 16),
         Some("full") => (950_000_000, 64),
         Some(_) => usage(),
     };

@@ -30,21 +30,21 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--warmup-data", type=Path, help="dataset for JVM warm-up runs (default: --data)")
     ap.add_argument("--config-file", type=Path, default=h.REPO / "bench" / "configs.yaml")
     ap.add_argument("--configs", help="comma-separated subset of configs to run")
-    ap.add_argument("--runs", type=int, help="measured runs per config (overrides configs.yaml)")
+    ap.add_argument("--runs", type=int,
+                    help="measured runs per config (default: hosts.<class>.runs, 10 bare-metal / 20 cloud-vm)")
     ap.add_argument("--warmups", type=int, help="JVM warm-up runs per JVM config (overrides configs.yaml)")
     ap.add_argument("--nmt-runs", type=int, help="NMT runs per JVM config (overrides configs.yaml)")
-    ap.add_argument("--cpuset", help="explicit --cpuset-cpus list (default: docker/pick-cores.sh)")
     ap.add_argument("--results", type=Path, default=h.REPO / "results")
     ap.add_argument("--seed", type=int, help="seed for the randomized run order (default: random, recorded)")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="plumbing test on any host; skips host checks; results are marked DRY RUN")
+    h.add_host_args(ap)
     return ap.parse_args()
 
 
 def load_config(args: argparse.Namespace) -> dict:
     cfg = h.load_yaml(args.config_file)
     proto = cfg["protocol"]
-    for key, override in (("runs", args.runs), ("jvm_warmup_runs", args.warmups), ("nmt_runs", args.nmt_runs)):
+    proto["runs"] = args.runs if args.runs is not None else h.runs_for_host(cfg, args.host_class)
+    for key, override in (("jvm_warmup_runs", args.warmups), ("nmt_runs", args.nmt_runs)):
         if override is not None:
             proto[key] = override
     if args.configs:
@@ -76,23 +76,22 @@ def container_command(cfg: dict, conf: dict, kind: str) -> list[str]:
 def main() -> int:
     args = parse_args()
     cfg = load_config(args)
-    drop = h.check_host(args.dry_run, cfg["protocol"]["drop_caches"])
+    ctx = h.prepare_host(args, cfg, args.data)
     for ref in cfg["images"].values():
         h.docker("image", "inspect", ref)  # fail fast if an image is missing
 
     data = h.dataset_info(args.data)
     warm = h.dataset_info(args.warmup_data) if args.warmup_data else data
     preset = (data["datagen"] or {}).get("preset", "custom")
-    cpuset, cpuset_source = h.pick_cpuset(args.cpuset, cfg["container"]["cores"], args.dry_run)
     seed = args.seed if args.seed is not None else random.SystemRandom().randrange(2**32)
     schedule = build_schedule(cfg, seed)
 
     stamp = h.utc_stamp()
-    out = args.results / (stamp + ("-dryrun" if args.dry_run else ""))
+    out = args.results / (stamp + ctx.suffix)
     runs_dir = out / "runs"
     runs_dir.mkdir(parents=True)
 
-    manifest = h.base_manifest(cfg, args.dry_run, stamp, cpuset, cpuset_source, drop, data)
+    manifest = h.base_manifest(cfg, ctx, stamp, data)
     manifest.update({
         "experiment": "production",
         "warmup_dataset": warm,
@@ -102,7 +101,7 @@ def main() -> int:
         "schedule": [f"{i:03d}-{n}-{k}" for i, (n, k) in enumerate(schedule)],
     })
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    h.log(f"{len(schedule)} runs -> {out}" + ("  [DRY RUN]" if args.dry_run else ""))
+    h.log(f"{len(schedule)} runs ({ctx.host_class}) -> {out}" + ("  [DRY RUN]" if args.dry_run else ""))
 
     rows: list[dict] = []
     for order, (name, kind) in enumerate(schedule):
@@ -110,8 +109,8 @@ def main() -> int:
         run_dir = runs_dir / f"{order:03d}-{name}-{kind}"
         dataset = Path(warm["path"]) if kind == "warmup" else Path(data["path"])
         h.log(f"[{order + 1}/{len(schedule)}] {name} ({kind})")
-        row = h.execute(cfg, image=cfg["images"][conf["image"]], command=container_command(cfg, conf, kind),
-                        run_dir=run_dir, data=dataset, cpuset=cpuset, drop=drop, dry_run=args.dry_run)
+        row = h.execute(cfg, ctx, image=cfg["images"][conf["image"]], command=container_command(cfg, conf, kind),
+                        run_dir=run_dir, data=dataset)
         row.update({"config": name, "kind": kind, "order": order, "preset": preset})
         rows.append(row)
         h.write_csv(out / "runs.csv", rows, h.RUN_COLUMNS)

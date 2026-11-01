@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from analyze import (COLORS, COLUMN_IN, LINESTYLES, MARKERS, MIB, MUTED, fmt, load, mean_ci, ordered, pm,
-                     read_pauses, save, style, write_table)
+                     read_pauses, save, style, watermark, write_table)
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
 def validation_table(vdir: Path, out: Path, allow_dry_run: bool) -> None:
     vmanifest, _ = load(vdir, allow_dry_run)
     report = json.loads((vdir / "validation.json").read_text())
-    dry = bool(vmanifest.get("dry_run"))
+    dry = watermark(vmanifest)
     preset = (vmanifest["dataset"].get("datagen") or {}).get("preset", "?")
     rows = []
     for c in ordered(report):
@@ -88,7 +88,7 @@ def main() -> int:
     manifest, runs = load(args.results, args.allow_dry_run)
     if manifest.get("experiment") != "heapsweep":
         sys.exit(f"{args.results} is not a heap-sweep results directory")
-    dry = bool(manifest.get("dry_run"))
+    dry = watermark(manifest)
     out = args.results / "analysis"
     out.mkdir(exist_ok=True)
     runs_dir = args.results / "runs"
@@ -181,7 +181,7 @@ def main() -> int:
     if args.validation:
         validation_table(args.validation, out, args.allow_dry_run)
 
-    print(f"heap-sweep analysis written to {out}" + ("  [DRY RUN]" if dry else ""))
+    print(f"heap-sweep analysis written to {out}" + (f"  [{dry}]" if dry else ""))
     return 0
 
 

@@ -1,6 +1,7 @@
 # Paper deltas
 
-Every fact in the paper draft (Sections I–II, as of 2026-10-23) that the
+Every fact in the paper draft (Sections I–II, as of 2026-10-23; updated
+2026-10-31 for the AWS host change) that the
 artifact contradicts, refines, or adds. Each entry gives the paper's current
 text, what the artifact actually does, and suggested replacement wording.
 Strike an entry once the LaTeX is updated.
@@ -9,6 +10,16 @@ Status key: **MUST** = paper is currently wrong or incomplete;
 **ADD** = new information the paper needs; **WORDING** = framing.
 
 ---
+
+## H. Hardware and environment (§II-A, Table I) — changed 2026-10-31
+
+| # | Status | Paper says | Artifact uses | Suggested text |
+|---|---|---|---|---|
+| H1 | **MUST** | Table I: AMD EPYC 9354 bare-metal node, 256 GB, Docker 27.1.1 | **Primary host: AWS EC2 `c6id.4xlarge`** (On-Demand): 16 vCPU = 8 physical cores × 2 SMT, Intel Xeon Platinum 8375C (Ice Lake), 32 GiB, 1 × 950 GB local NVMe instance store; Ubuntu 24.04 LTS (Canonical AMI); Docker Engine from Docker's apt repository. **Validation host: `c6id.metal`** (same CPU family, bare metal), small preset only. Exact AMI id, kernel, Docker version and instance id are in each `manifest.json`. | replace Table I with both instances; take versions from the manifests, not from this file |
+| H2 | **MUST** | "dedicated, single-node bare-metal architecture to eliminate the noisy-neighbor multi-tenancy effects" | primary runs are on a **virtual machine** (Nitro). Mitigations: 4 physical cores pinned with their SMT siblings left idle; data on local NVMe instance store (not network EBS); CPU steal sampled at 10 Hz per run on the pinned cores; runs with steal > 0.5 % of their CPU time are flagged and a sensitivity analysis excludes them; N = 20 runs per configuration; coefficient of variation reported; validation of the Scala/Rust ratios on `c6id.metal` | rewrite §II-A around the VM + validation design; drop the "eliminate noisy-neighbor" claim |
+| H3 | ADD | — | host classes: `cloud-vm` timed runs only on an allowlisted EC2 type (IMDSv2-verified), On-Demand, data on instance store; Spot runs are smoke tests only (watermarked) | one sentence in Protocol |
+| H4 | ADD | — | cpufreq governor / turbo controls are not exposed in the VM (recorded as "unavailable"); observed MHz per run is recorded from `/proc/cpuinfo` | mention in Threats |
+| H5 | ADD | — | VM-vs-metal comparison: per configuration, ratio to `rust-system` for CPU-seconds, M_peak and p99 per-unit latency on both hosts, with 95% bootstrap CIs and the VM/metal ratio-of-ratios | new paragraph + `table_compare_hosts` / `fig_compare_hosts` |
 
 ## A. Software versions (§II-B)
 
@@ -36,13 +47,12 @@ Status key: **MUST** = paper is currently wrong or incomplete;
 
 | # | Status | Paper says | Artifact uses | Suggested text |
 |---|---|---|---|---|
-| C1 | **MUST** | "1-Terabyte … containing 1.2 billion rows" | full preset = **950,000,000 rows ≈ 1.007 TB** (≈1,060 bytes/row on disk); 1.2 B rows would be ≈ 1.27 TB | "…a synthetic, uncompressed ≈1.0 TB dataset of 950 million rows…" |
+| C1 | **MUST** | "1-Terabyte … containing 1.2 billion rows" | **production-style comparison uses the medium preset: 95,000,000 rows ≈ 100.7 GB** (≈1,060 bytes/row on disk), 16 files. The 1 TB scale is not used: it would not fit the c6id.4xlarge 950 GB instance store with headroom, and the per-run cost would preclude N = 20. (1.2 B rows would be ≈ 1.27 TB.) | "…a synthetic, uncompressed ≈100 GB dataset of 95 million rows…"; remove "1-Terabyte" from the abstract and §II-C |
 | C2 | ADD | schema `{id: UUID, ts: Int64, payload: String(1024), metric: Float64}` | id = FixedSizeBinary(16) UUIDv4; ts = epoch-ms uniform over 30 days from 2024-01-01; payload = exactly 1024 chars from `[A-Za-z0-9_-]`; metric ~ Normal(100, 25) clamped ≥ 0; all columns REQUIRED | give the distributions |
-| C3 | ADD | — | **row groups of 65,536 rows (~69 MB)**, 64 files | "Row groups hold 65,536 rows (≈69 MB) so that four concurrent row groups fit well within the 4 GB envelope." |
+| C3 | ADD | — | **row groups of 65,536 rows (~69 MB)**; medium preset = 16 files (90 full row groups each) | "Row groups hold 65,536 rows (≈69 MB) so that four concurrent row groups fit well within the 4 GB envelope." |
 | C4 | ADD | "uncompressed" | UNCOMPRESSED, dictionary **disabled**, PLAIN encoding, data page v1 | state all three |
 | C5 | ADD | — | deterministic generator (ChaCha8, seed 42, one stream per file); byte-identical regeneration | reproducibility sentence |
-
-| C6 | **MUST** | one dataset for everything | **Preset plan:** heap sweep on the **small** preset (10 M rows, ≈10.6 GB); H_min validated on the **full** preset (per collector, 3 attempts at the small-preset H_min and at ⌈1.25 × H_min⌉); production-style comparison on the **full** preset (950 M rows, ≈1.0 TB). | "Because the workload streams with bounded state (720 hourly groups; four row groups in flight), the minimum heap should not depend on dataset size. We determine H_min on a 10 M-row dataset and verify it on the full 950 M-row dataset [result: agree / disagree]." Report a disagreement if it occurs. |
+| C6 | **MUST** | one dataset for everything | **Preset plan (c6id.4xlarge):** heap sweep on the **small** preset (10 M rows, ≈10.6 GB); H_min validated on the **medium** preset (per collector, 3 attempts at the small-preset H_min and at ⌈1.25 × H_min⌉); production-style comparison on the **medium** preset (95 M rows, ≈100.7 GB). **c6id.metal:** production-style comparison on the small preset only, compared against the c6id.4xlarge small-preset run (H5). | "Because the workload streams with bounded state (720 hourly groups; four row groups in flight), the minimum heap should not depend on dataset size. We determine H_min on a 10 M-row dataset and verify it on the 95 M-row dataset [result: agree / disagree]." Report a disagreement if it occurs. |
 
 ## D. Workload (paper has no workload section yet — §IV)
 
@@ -62,9 +72,10 @@ Status key: **MUST** = paper is currently wrong or incomplete;
 | E3 | ADD | E_compute integral of CPU utilization | `cpu.stat usage_usec` of the container cgroup at exit (exact kernel accounting, equals the integral) | note equivalence |
 | E3b | ADD | "execution lifetime … from the initial file descriptor read to the final durable disk synchronization" | wall time = pipeline process start → exit inside the container (includes JVM startup), measured with `/proc/uptime` (not stepped by NTP; 10 ms resolution); the pipeline's own main → output `fsync` time is also recorded | state both and which one tables use (`wall_ns`) |
 | E4 | ADD | GC pauses via JFR | `jdk.GCPhasePause` (pause distribution, total pause time) + `jdk.GarbageCollection` (GC count; total GC-cycle time = sum of cycle durations, wall time incl. concurrent phases) + `jdk.GCHeapSummary` (heap used/committed), parsed with `jfr print --json`; ZGC's cost appears mainly as concurrent CPU, not pauses | mention the event types, both totals, and the ZGC caveat |
-| E5 | ADD | cost from vCPU-hours | both **provisioned** (4 vCPU × wall time — what clouds bill) and **consumed** (`usage_usec`) vCPU-hours; rates from a user-supplied YAML (no hardcoded prices) | report both |
-| E6 | ADD | — | protocol: page cache dropped before every run; 2 discarded JVM warm-up runs on the small preset; N = 10 measured runs per config in randomized order | add a "Protocol" paragraph |
-| E7 | ADD | — | statistics: mean ± 95 % CI (t), Mann–Whitney U with Cliff's δ, cluster-bootstrap CIs (resampling runs) for p99/p99.9; a quantile q is reported only with ≥ 10/(1−q) samples (p99 ≥ 1,000; p99.9 ≥ 10,000) — on the small preset (≈1,520 full units over 10 runs) per-unit p99.9 is therefore not reported; the full preset (≈14,500 units/run) supports it | add a "Statistical treatment" paragraph |
+| E5 | **MUST** | "e.g. AWS EC2 On-Demand pricing for general-purpose instances" | both **provisioned** (4 vCPU × wall time — what clouds bill) and **consumed** (`usage_usec`) vCPU-hours, priced with the **c6id.4xlarge On-Demand rate** for the run's region, per vCPU-hour = instance hourly price ÷ 16; the user fills `analysis/cost.yaml` with the price, source URL and retrieval date (no hardcoded prices) | "Costs use the c6id.4xlarge On-Demand price in <region> as of <date>, apportioned per vCPU" |
+| E6 | **MUST** | — | protocol: page cache dropped before every run; 2 discarded JVM warm-up runs on the small preset; **N = 20 measured runs per configuration on c6id.4xlarge** (`cloud-vm`), N = 10 on c6id.metal (`bare-metal`), all in randomized interleaved order | add a "Protocol" paragraph |
+| E7 | ADD | — | statistics: mean ± 95 % CI (t), coefficient of variation, Mann–Whitney U with Cliff's δ, cluster-bootstrap CIs (resampling runs) for p99/p99.9; a quantile q is reported only with ≥ 10/(1−q) samples (p99 ≥ 1,000; p99.9 ≥ 10,000). Medium preset: 1,440 full units per run × 20 runs = 28,800 → p99.9 supported. Small preset on metal: 152 × 10 = 1,520 → p99 only. | add a "Statistical treatment" paragraph |
+| E8 | ADD | — | CPU steal: sampled at 10 Hz from `/proc/stat` on the pinned cores; per run total steal and steal ÷ CPU time; runs above 0.5 % flagged; flagged counts per configuration and a sensitivity analysis excluding flagged runs (`table_steal_sensitivity`) | one sentence in Protocol + Threats |
 
 ## F. Framing (Abstract, §I, §II)
 
@@ -74,4 +85,5 @@ Status key: **MUST** = paper is currently wrong or incomplete;
 | F2 | MUST | §I roadmap says §II = related work, §III = setup; the draft's §II is the setup and there is no related-work section. |
 | F3 | WORDING | "airtight", "peer-reviewed evaluation", "exact GC tax", "completely eliminating" — soften. |
 | F4 | WORDING | Title/scope: single node, 4 vCPU, no distributed shuffle; scope the claim to per-executor runtime cost. |
-| F5 | ADD | Threats to validity: arrow-rs vs parquet-java library differences (eager row-group load vs lazy page reads, per-value `Binary` objects); hash-map idiom (SipHash `HashMap` vs `LongMap`); heap sizing fixes JVM footprint; JIT warm-up included in wall time. |
+| F5 | ADD | Threats to validity: arrow-rs vs parquet-java library differences (eager row-group load vs lazy page reads, per-value `Binary` objects); hash-map idiom (SipHash `HashMap` vs `LongMap`); heap sizing fixes JVM footprint; JIT warm-up included in wall time. **VM effects (primary host is a Nitro VM):** CPU steal and noisy neighbours (measured and flagged, sensitivity analysis), frequency/turbo not controllable or observable beyond `/proc/cpuinfo` MHz, SMT siblings idle but not reserved from the hypervisor's view, and possible differences from bare metal (quantified by the c6id.metal validation on the small preset only). |
+| F6 | WORDING | Abstract and §I say "1-Terabyte" and "bare-metal"; update to the 95 M-row / ≈100 GB dataset on c6id.4xlarge with c6id.metal validation. |

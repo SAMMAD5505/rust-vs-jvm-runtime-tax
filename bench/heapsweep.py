@@ -18,7 +18,7 @@ reason. Warm-ups first; measured runs of all points and of the Rust
 references are then interleaved in random order. Failed runs are counted,
 never retried.
 
-Validation (--validate-from DIR, run on a different preset, e.g. full):
+Validation (--validate-from DIR, run on a different preset, e.g. medium):
 for each collector, probe the H_min found in DIR and ceil(1.25 x H_min),
 running all attempts (default 3) at each, and report whether they agree.
 
@@ -27,7 +27,7 @@ and --dry-run semantics as bench/run.py.
 
 Examples:
     python3 bench/heapsweep.py --data data/small
-    python3 bench/heapsweep.py --data data/full --validate-from results/<ts>-heapsweep
+    python3 bench/heapsweep.py --data data/medium --validate-from results/<ts>-heapsweep
 """
 
 from __future__ import annotations
@@ -50,17 +50,16 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--config-file", type=Path, default=h.REPO / "bench" / "configs.yaml")
     ap.add_argument("--collectors", help="comma-separated subset of heapsweep.collectors")
     ap.add_argument("--hmin", help="skip the search for some collectors, e.g. scala-g1=640,scala-zgc=896 (MiB)")
-    ap.add_argument("--runs", type=int, help="measured runs per point (overrides configs.yaml)")
+    ap.add_argument("--runs", type=int,
+                    help="measured runs per point (default: hosts.<class>.runs, 10 bare-metal / 20 cloud-vm)")
     ap.add_argument("--warmups", type=int, help="warm-up runs per JVM point (overrides configs.yaml)")
     ap.add_argument("--attempts", type=int, help="attempts per H_min probe (overrides configs.yaml)")
     ap.add_argument("--multiples", help="comma-separated heap multiples (overrides configs.yaml)")
     ap.add_argument("--validate-from", type=Path,
                     help="validation mode: probe the H_min values of this heap-sweep results directory")
-    ap.add_argument("--cpuset", help="explicit --cpuset-cpus list (default: docker/pick-cores.sh)")
     ap.add_argument("--results", type=Path, default=h.REPO / "results")
     ap.add_argument("--seed", type=int, help="seed for the randomized run order (default: random, recorded)")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="plumbing test on any host; skips host checks; results are marked DRY RUN")
+    h.add_host_args(ap)
     return ap.parse_args()
 
 
@@ -94,6 +93,8 @@ class Sweep:
         for key, val in (("runs", args.runs), ("warmup_runs", args.warmups)):
             if val is not None:
                 hs[key] = val
+        if hs["runs"] is None:
+            hs["runs"] = h.runs_for_host(cfg, args.host_class)
         if args.attempts is not None:
             hs["search"]["attempts"] = args.attempts
         if args.multiples:
@@ -106,18 +107,17 @@ class Sweep:
 
     def setup(self, label: str) -> None:
         a, cfg = self.args, self.cfg
-        self.drop = h.check_host(a.dry_run, cfg["protocol"]["drop_caches"])
+        self.ctx = h.prepare_host(a, cfg, a.data)
         for ref in cfg["images"].values():
             h.docker("image", "inspect", ref)
         self.data = h.dataset_info(a.data)
         self.preset = (self.data["datagen"] or {}).get("preset", "custom")
-        self.cpuset, cpuset_source = h.pick_cpuset(a.cpuset, cfg["container"]["cores"], a.dry_run)
         self.seed = a.seed if a.seed is not None else random.SystemRandom().randrange(2**32)
         stamp = h.utc_stamp()
-        self.out = a.results / (stamp + f"-{label}" + ("-dryrun" if a.dry_run else ""))
+        self.out = a.results / (stamp + f"-{label}" + self.ctx.suffix)
         self.runs_dir = self.out / "runs"
         self.runs_dir.mkdir(parents=True)
-        self.manifest = h.base_manifest(cfg, a.dry_run, stamp, self.cpuset, cpuset_source, self.drop, self.data)
+        self.manifest = h.base_manifest(cfg, self.ctx, stamp, self.data)
         self.manifest.update({"experiment": label, "schedule_seed": self.seed})
         self.save_manifest()
         h.log(f"{label} -> {self.out}" + ("  [DRY RUN]" if a.dry_run else ""))
@@ -130,8 +130,8 @@ class Sweep:
         tag = f"{heap_mib}m" if heap_mib else "ref"
         suffix = f"-a{attempt}" if attempt is not None else ""
         run_dir = self.runs_dir / f"{self.seq:04d}-{name}-{kind}-{tag}{suffix}"
-        row = h.execute(self.cfg, image=image, command=command, run_dir=run_dir, data=Path(self.data["path"]),
-                        cpuset=self.cpuset, drop=self.drop, dry_run=self.args.dry_run, timeout_s=timeout_s)
+        row = h.execute(self.cfg, self.ctx, image=image, command=command, run_dir=run_dir,
+                        data=Path(self.data["path"]), timeout_s=timeout_s)
         row.update({"config": name, "kind": kind, "order": self.seq, "preset": self.preset,
                     "heap_mib": heap_mib, "multiple": multiple, "attempt": attempt})
         self.seq += 1

@@ -38,11 +38,24 @@ configs:
     jvm_flags: ["-XX:+UseParallelGC"]
 
 protocol:
-  runs: 10                  # measured runs per config, executed in randomized order
+  # Measured runs per config (and per heap-sweep point) come from hosts.<class>.runs
+  # unless --runs is given; executed in randomized order.
   jvm_warmup_runs: 2        # per JVM config, on the warm-up dataset; discarded
   nmt_runs: 1               # per JVM config, NativeMemoryTracking=summary; excluded from timing
   sample_hz: 10             # host-side cgroup sampling frequency
-  drop_caches: true         # sync + echo 3 > /proc/sys/vm/drop_caches before every run (root)
+  drop_caches: true         # sync + `sysctl vm.drop_caches=3` before every run (root or sudoers rule)
+  # A run is flagged when CPU steal on its cores exceeds this fraction of its CPU time.
+  steal_flag_fraction: 0.005
+
+# Host classes (--host-class). Timed runs on a VM are allowed only as cloud-vm, and
+# only when every cloud-vm gate passes (bench/hostinfo.py: evaluate_gates).
+hosts:
+  bare_metal:
+    runs: 10
+  cloud_vm:
+    runs: 20                # more runs to average out VM noise
+    instance_allowlist: [c6id.4xlarge, c6id.metal]
+    instance_store_model: "Amazon EC2 NVMe Instance Storage"
 
 # Heap-size sweep (bench/heapsweep.py), after Hertz & Berger (OOPSLA 2005).
 # Phase 1 binary-searches H_min per collector; phase 2 runs each collector at
@@ -68,5 +81,5 @@ heapsweep:
     factor: 1.5
     round_mib: 64
     floor_mib: 512
-  runs: 10                   # measured runs per (collector, multiple) and per reference
+  runs: null                 # per (collector, multiple) and per reference; null = hosts.<class>.runs
   warmup_runs: 1             # per (collector, multiple); discarded

@@ -30,9 +30,10 @@ regenerated from raw `results/` data.
 | `docker/` | Images (base images pinned by digest), in-container wrapper, core picker |
 | `bench/` | `run.py` (production-style matrix), `heapsweep.py` (H_min search + heap sweep), `harness.py` (shared), `configs.yaml`, cgroup sampler, JFR parser, `verify.py` |
 | `profiling/` | JFR settings (`gc.jfc`) |
-| `analysis/` | `analyze.py` (statistics, figures, LaTeX tables), `heapsweep.py` (heap-sweep figures/tables), `cost.yaml` (rates you supply) |
+| `analysis/` | `analyze.py` (statistics, figures, LaTeX tables), `heapsweep.py` (heap-sweep figures/tables), `compare_hosts.py` (VM vs metal), `cost.yaml` (rates you supply) |
+| `scripts/` | `ec2-setup.sh` (idempotent EC2 host setup), `export-results.sh` (archive results before stopping an instance) |
 | `results/` | Raw run output (git-ignored; schema in `results/README.md`) |
-| `docs/` | `paper-deltas.md` (facts the paper must reflect), `fat-jar-merge.md` (dependency merge audit) |
+| `docs/` | `aws.md` (running on EC2), `paper-deltas.md` (facts the paper must reflect), `fat-jar-merge.md` (dependency merge audit) |
 | `PLAN.md` | Design rationale and status log |
 
 ## The workload
@@ -71,7 +72,12 @@ batches. See `PLAN.md` §3 for the full specification.
 |---|---|---|---|---|
 | `dev` | 1,000,000 | 4 | ≈1.06 GB | 3 GB |
 | `small` | 10,000,000 | 8 | ≈10.6 GB | 15 GB |
-| `full` | 950,000,000 | 64 | ≈1.01 TB (0.92 TiB) | ≥1.2 TB (input plus headroom for the OS, images and results) |
+| `medium` | 95,000,000 | 16 | ≈100.7 GB | 130 GB (fits the c6id.4xlarge 950 GB instance store with `small` alongside) |
+| `full` | 950,000,000 | 64 | ≈1.01 TB (0.92 TiB) | ≥1.2 TB; not used in the paper (does not fit the c6id.4xlarge instance store) |
+
+The paper uses `small` for the heap sweep and `medium` for the H_min
+validation and the production-style comparison. The c6id.metal validation
+host runs `small` only.
 
 Data is UNCOMPRESSED, PLAIN-encoded, with no dictionary, in row groups of
 65,536 rows (≈69 MB). That row-group size keeps four in-flight row groups well
@@ -81,23 +87,39 @@ more than 100 GB without `--yes`.
 
 ## Requirements
 
-**Benchmark host (for numbers that go in the paper).** The paper's
-configuration is in Table I: AMD EPYC 9354, 256 GB RAM, NVMe, Ubuntu 24.04,
-kernel 6.8. The harness requires all of the following, and refuses to record
-timings without them:
+**Benchmark hosts (for numbers that go in the paper).**
 
-- Linux on **bare metal**: the CPU must not report the `hypervisor` flag
-- **cgroup v2**: `stat -fc %T /sys/fs/cgroup` prints `cgroup2fs`
-- root, or passwordless `sudo`, to drop the page cache before each run
-- Docker Engine
-- Python 3.12 with `pip install -r bench/requirements.txt -r analysis/requirements.txt`
+| Role | Instance | Host class |
+|---|---|---|
+| Primary | AWS `c6id.4xlarge` On-Demand: 8 physical cores × 2 SMT, Xeon Platinum 8375C, 32 GiB, 950 GB NVMe instance store, Ubuntu 24.04 | `cloud-vm` |
+| Validation | AWS `c6id.metal` On-Demand (same CPU family, bare metal), small preset only | `bare-metal` |
 
-Recommended host settings:
-- CPU governor set to `performance`
-- boost/turbo state fixed. Leave it on or off as you prefer, but it gets recorded either way.
-- SMT disabled, or the benchmark cores isolated with `isolcpus=`
+**[docs/aws.md](docs/aws.md)** covers launching, setup
+(`scripts/ec2-setup.sh`), running, exporting results before you stop the
+instance, and the metal validation.
 
-The manifest records every one of these settings.
+The harness refuses to record timings unless every gate of the selected
+`--host-class` passes (`make aws-preflight` reports them all):
+- **Both classes:** Linux; **cgroup v2** (`cgroup2fs`); page-cache drop (root,
+  or the sudoers rule for `sysctl vm.drop_caches=3`); no Spot instance unless
+  `--allow-spot`. Spot results are watermarked SMOKE TEST.
+- **`bare-metal`:** the CPU does not report the `hypervisor` flag.
+- **`cloud-vm`:**
+  - EC2 detected via IMDSv2
+  - instance type in the `configs.yaml` allowlist (c6id.4xlarge, c6id.metal)
+  - data directory on the local NVMe instance store, not EBS
+
+On `cloud-vm`:
+- N = 20 runs per configuration (10 on bare metal)
+- CPU steal on the pinned cores is sampled at 10 Hz
+- runs whose steal exceeds 0.5% of their CPU time are flagged, and a
+  sensitivity analysis excludes them
+- the governor and turbo controls, normally not exposed in a VM, are recorded
+  as "unavailable", along with the observed MHz per run
+
+On bare metal, also set the CPU governor to `performance`, fix the boost
+state, and disable SMT or isolate the benchmark cores. The manifest records
+all of these.
 
 **Development and correctness (any OS with Docker, or native):**
 - rustc 1.81.0
@@ -118,31 +140,39 @@ make test PRESET=dev
 # 2. Images
 make images
 
-# 3. Data (on the benchmark host)
+# 3. Host check and data (on the benchmark host; on EC2 follow docs/aws.md first)
+export HOST_CLASS=cloud-vm          # c6id.4xlarge; bare-metal on c6id.metal
+make aws-preflight                  # report only
 make datagen PRESET=small
-make datagen PRESET=full            # ≈1 TB; passes --yes for you
+make datagen PRESET=medium          # ≈100 GB; passes --yes for you
 
 # 4. Calibrate: one rust-system + one scala-g1 run; prints projected run times
 make calibrate
 
-# 5. Heap-size sweep on the small preset, then validate its H_min on the full preset
+# 5. Heap-size sweep on the small preset, then validate its H_min on the medium preset
 make heapsweep
 make heapsweep-validate            # SWEEP=results/<ts>-heapsweep, default: latest
 
-# 6. Production-style comparison on the full preset
-make bench DATA=data/full WARMUP_DATA=data/small
+# 6. Production-style comparison on the medium preset (+ small, for compare-hosts)
+make bench DATA=data/medium WARMUP_DATA=data/small
+make bench DATA=data/small  WARMUP_DATA=data/small
 
 # 7. Analysis (RESULTS=results/<ts>; default: latest bench or heap-sweep directory)
 make plot
 make plot RESULTS=results/<ts>-heapsweep VALIDATION=results/<ts>-heapsweep-validate
+make compare-hosts VM=results/<c6id.4xlarge small ts> METAL=results/<c6id.metal ts>
+
+# 8. Before stopping an EC2 instance: archive and copy off the results
+make export-results EXPORT="results/<ts> ..."
 ```
 
-| Experiment | Preset | What it gives |
+| Experiment | Host / preset | What it gives |
 |---|---|---|
-| `make calibrate` | small | measured per-run times and projected totals for everything below |
-| `make heapsweep` | small | H_min, measured off-heap reserves, CPU and M_peak vs heap size |
-| `make heapsweep-validate` | full | whether the small-preset H_min holds on 950 M rows (3 attempts each at H_min and 1.25 × H_min) |
-| `make bench` | full | production-style CPU, wall, M_peak, latency, GC pauses, cost |
+| `make calibrate` | 4xlarge / small | measured per-run times and projected totals for everything below |
+| `make heapsweep` | 4xlarge / small | H_min, measured off-heap reserves, CPU and M_peak vs heap size |
+| `make heapsweep-validate` | 4xlarge / medium | whether the small-preset H_min holds on 95 M rows (3 attempts each at H_min and 1.25 × H_min) |
+| `make bench` | 4xlarge / medium | production-style CPU, wall, M_peak, latency, GC pauses, cost |
+| `make bench` | 4xlarge + metal / small | inputs to `make compare-hosts` (does the VM distort the Scala/Rust ratios?) |
 
 **Two JVM experiments.**
 - `make bench` runs the *production-style* JVM configuration: a fixed,
@@ -170,6 +200,8 @@ make plot RESULTS=results/<ts>-heapsweep VALIDATION=results/<ts>-heapsweep-valid
 - `--cpuset 2,4,6,8` pins specific cores. The default lets `docker/pick-cores.sh` choose 4 physical cores and leave their SMT siblings unused.
 - `--seed S` fixes the run order (the default is random and is recorded)
 - `--dry-run` tests the plumbing on a non-qualifying host. Its results are marked `-dryrun`, and the analysis watermarks them.
+- `--host-class bare-metal|cloud-vm` (Make: `HOST_CLASS=`) selects the gates and the default N
+- `--allow-spot` (Make: `ALLOW_SPOT=1`) permits a Spot instance for smoke tests; results are marked `-smoke` and watermarked
 
 Fill in `analysis/cost.yaml` with a per-vCPU-hour rate and its source before
 `make plot` if you want the cost table. No prices are hardcoded.
@@ -186,15 +218,17 @@ Fill in `analysis/cost.yaml` with a per-vCPU-hour rate and its source before
 | H_min and heap-sweep curves | `bench/heapsweep.py` (JVM), with Rust reference runs in the same session |
 | GC pauses, heap used/committed | JFR (`profiling/gc.jfc`): `jdk.GCPhasePause`, `jdk.GarbageCollection`, `jdk.GCHeapSummary` |
 | JVM native memory | one extra NMT run per JVM config, excluded from timing statistics |
-| Cost | provisioned (4 vCPU × wall time) and consumed vCPU-hours × your `cost.yaml` rate |
+| Cost | provisioned (4 vCPU × wall time) and consumed vCPU-hours × your `cost.yaml` rate (the paper uses the c6id.4xlarge On-Demand price ÷ 16 vCPU) |
+| CPU steal, observed MHz | `/proc/stat` steal and `/proc/cpuinfo` MHz on the pinned cores, 10 Hz |
+| VM vs metal | `make compare-hosts`: ratios to `rust-system` on both hosts, with bootstrap CIs |
 
 Run protocol:
 - page cache dropped before every run
 - 2 discarded JVM warm-up runs per JVM config
-- 10 measured runs per config, in randomized order
+- N measured runs per config in randomized order: 20 on `cloud-vm`, 10 on `bare-metal`
 
 Statistics:
-- mean ± 95% CI (t-distribution)
+- mean ± 95% CI (t-distribution), and the coefficient of variation
 - Mann–Whitney U and Cliff's δ against `rust-system`
 - cluster-bootstrap CIs (resampling whole runs) for p99 and p99.9 latency
 
@@ -275,6 +309,19 @@ conflicts. See `docs/fat-jar-merge.md`.
 7. **Isolation.** CPU pinning leaves SMT siblings unassigned but does not
    reserve them. Use `isolcpus` or disable SMT for strict isolation. The
    host state is recorded in `manifest.json`.
+8. **The primary host is a VM** (EC2 `c6id.4xlarge`, Nitro). Known effects:
+   - CPU steal and noisy neighbours. These are measured per run on the pinned
+     cores; runs above 0.5% steal are flagged and a sensitivity analysis
+     excludes them.
+   - Frequency and turbo can't be controlled; only the observed MHz is
+     recorded.
+   - The idle SMT siblings are idle from the guest's view, not the
+     hypervisor's.
+
+   N = 20 runs per configuration and the coefficient of variation make the
+   noise visible. The `c6id.metal` run on the small preset tests whether the
+   Scala/Rust ratios differ between VM and metal (`make compare-hosts`).
+   Results are not claimed to transfer to other instance families.
 
 ## Citation
 

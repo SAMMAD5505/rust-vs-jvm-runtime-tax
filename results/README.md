@@ -1,8 +1,20 @@
 # results/
 
-Each `bench/run.py` invocation writes `results/<UTC timestamp>/` (suffixed
-`-dryrun` for dry runs). Run directories are git-ignored and are archived
-alongside the paper instead.
+Each `bench/run.py` invocation writes `results/<UTC timestamp>/`. The suffix
+is `-dryrun` for dry runs and `-smoke` for Spot-instance smoke tests; both are
+watermarked by the analysis and must not be published. Run directories are
+git-ignored and are archived alongside the paper instead
+(`make export-results` → `results/exports/*.tar.gz` + `.sha256`).
+
+`manifest.json` (schema 3) records:
+- `host_class`, `smoke_test`, `ec2` (IMDSv2: instance type and id, region,
+  AZ, AMI, lifecycle) and `data_storage` (device, filesystem, disk models)
+- `gates`: the facts and any blockers a dry run ignored
+- `cpuset.thread_siblings`
+- `clock_start` / `clock_end` / `clock_realtime_drift_ns`
+
+`make compare-hosts` writes `results/compare-<vm>-vs-<metal>/`:
+`compare_hosts.{csv,json}`, `table_compare_hosts.tex`, `fig_compare_hosts.{pdf,png}`.
 
 ```
 results/<timestamp>/
@@ -76,3 +88,8 @@ projected totals.
 | `gc_count`, `gc_pause_count`, `gc_pause_total_ns`, `gc_pause_max_ns`, `gc_duration_total_ns`, `z_alloc_stall_total_ns` | from JFR (`jdk.GarbageCollection`, `jdk.GCPhasePause`, `jdk.ZAllocationStall`); `gc_duration_total_ns` = Σ GC-cycle durations (wall, incl. concurrent phases) |
 | `heap_used_max`, `heap_committed_max` | from JFR `jdk.GCHeapSummary` |
 | `nmt_total_committed_bytes`, `nmt_heap_committed_bytes` | NMT runs only |
+| `steal_usec`, `steal_fraction`, `steal_flagged` | CPU steal on the pinned cores over the run (`/proc/stat`); fraction = steal ÷ run CPU time; flagged above `protocol.steal_flag_fraction` (0.5%) |
+| `cpu_mhz_mean`, `cpu_mhz_min`, `cpu_mhz_max` | observed MHz of the pinned cores from 10 Hz `/proc/cpuinfo` samples |
+
+`cgroup_samples.csv` also carries per-sample `steal_ticks` (cumulative, USER_HZ)
+and `cpu_mhz`.

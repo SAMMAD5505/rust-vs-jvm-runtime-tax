@@ -8,6 +8,36 @@ permissions:
   contents: read
 
 jobs:
+  static:
+    name: unit tests + shellcheck + setup-script storage test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r bench/requirements.txt
+
+      - name: host-gate unit tests
+        run: python -m unittest discover -s bench/tests -v
+
+      - name: shellcheck
+        run: |
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt koalaman/shellcheck:v0.10.0 -x \
+            scripts/*.sh tests/*.sh docker/*.sh
+
+      - name: ec2-setup.sh instance-store logic on loop devices (privileged container)
+        run: tests/ec2-setup-storage.sh
+
+      - name: ec2-setup.sh full dry run (must stop at the missing instance store)
+        run: |
+          out=$(docker run --rm -v "$PWD:/repo:ro" -w /repo ubuntu:24.04 \
+                bash -c 'DRY_RUN=1 bash scripts/ec2-setup.sh' 2>&1 || true)
+          echo "$out"
+          grep -q "no NVMe instance-store device found" <<<"$out"
+
   correctness:
     name: build + dev-preset verify
     runs-on: ubuntu-24.04
@@ -69,14 +99,27 @@ jobs:
           docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/data:/data" --entrypoint datagen \
             rvj-rust:latest --rows 200000 --files 4 --out /data/tiny
 
-      # GitHub runners are VMs, so timings are refused; --dry-run checks the plumbing only.
-      - name: harness dry run
-        run: |
-          python bench/run.py --data data/tiny --dry-run --runs 1 --warmups 1 --nmt-runs 1 \
-            --results results --seed 1
+      - name: preflight (report only)
+        run: python bench/preflight.py --data data
 
-      - name: analysis (dry run)
-        run: python analysis/analyze.py results/*Z-dryrun --allow-dry-run --bootstrap 50
+      # GitHub runners are VMs (not allowlisted EC2), so timings are refused;
+      # --dry-run checks the plumbing only, for both host classes.
+      - name: harness dry run (cloud-vm)
+        run: |
+          python bench/run.py --data data/tiny --dry-run --host-class cloud-vm --runs 2 --warmups 1 \
+            --nmt-runs 1 --results results/vm --seed 1
+
+      - name: harness dry run (bare-metal)
+        run: |
+          python bench/run.py --data data/tiny --dry-run --host-class bare-metal --runs 2 --warmups 0 \
+            --nmt-runs 0 --results results/metal --seed 2
+
+      - name: analysis + compare-hosts (dry run)
+        run: |
+          python analysis/analyze.py results/vm/*Z-dryrun --allow-dry-run --bootstrap 50
+          python analysis/analyze.py results/metal/*Z-dryrun --allow-dry-run --bootstrap 50
+          python analysis/compare_hosts.py --vm results/vm/*Z-dryrun --metal results/metal/*Z-dryrun \
+            --allow-dry-run --bootstrap 50 --out results/compare
 
       - name: heap sweep dry run (full H_min search, reduced sweep)
         run: |
@@ -94,10 +137,16 @@ jobs:
             --validation results/*-heapsweep-validate-dryrun
 
       - name: calibration dry run
-        run: python bench/calibrate.py --data data/tiny --dry-run --results results
+        run: python bench/calibrate.py --data data/tiny --dry-run --host-class cloud-vm --results results
+
+      - name: export-results
+        run: scripts/export-results.sh results/vm/*Z-dryrun
 
       - uses: actions/upload-artifact@v4
         with:
           name: harness-dry-run
-          path: results/*-dryrun/
+          path: |
+            results/**/*-dryrun/
+            results/compare/
+            results/exports/
           retention-days: 7

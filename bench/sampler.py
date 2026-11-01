@@ -7,10 +7,12 @@ import threading
 import time
 from pathlib import Path
 
+import hostinfo
+
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 # memory.stat keys recorded per sample; `anon` is the primary memory metric.
 STAT_KEYS = ["anon", "file", "kernel", "kernel_stack", "pagetables", "sock", "shmem", "file_mapped"]
-COLUMNS = ["t_ns", "memory_current", "memory_peak", *STAT_KEYS, "cpu_usage_usec"]
+COLUMNS = ["t_ns", "memory_current", "memory_peak", *STAT_KEYS, "cpu_usage_usec", "steal_ticks", "cpu_mhz"]
 
 
 def container_cgroup(pid: int, container_id: str) -> Path | None:
@@ -49,9 +51,10 @@ def _read_kv(path: Path) -> dict[str, int]:
 class CgroupSampler(threading.Thread):
     """Samples until stopped or until the cgroup directory disappears."""
 
-    def __init__(self, cgroup: Path, hz: float, t0_ns: int):
+    def __init__(self, cgroup: Path, hz: float, t0_ns: int, cpus: list[int] | None = None):
         super().__init__(daemon=True)
         self.cgroup, self.period, self.t0_ns = cgroup, 1.0 / hz, t0_ns
+        self.cpus = cpus  # the run's cores, for steal and MHz (None = all CPUs)
         self.rows: list[dict] = []
         self._halt = threading.Event()
 
@@ -72,6 +75,8 @@ class CgroupSampler(threading.Thread):
                 "memory_current": _read_int(self.cgroup / "memory.current"),
                 "memory_peak": _read_int(self.cgroup / "memory.peak"),
                 "cpu_usage_usec": cpu.get("usage_usec"),
+                "steal_ticks": hostinfo.steal_ticks(self.cpus),  # cumulative, USER_HZ
+                "cpu_mhz": hostinfo.cpu_mhz(self.cpus),         # observed, from /proc/cpuinfo
             }
             row.update({k: stat.get(k) for k in STAT_KEYS})
             self.rows.append(row)

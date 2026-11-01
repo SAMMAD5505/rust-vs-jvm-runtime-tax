@@ -181,12 +181,45 @@ two outputs are bit-identical and reproducible across runs.
 `scala-parallel`; all JVM runs `-Xms3G -Xmx3G -XX:+AlwaysPreTouch`, JFR with
 `profiling/gc.jfc`, `-Xlog:gc*`.
 
-**Host gate.** Timed runs are refused unless the host is Linux,
-`stat -fc %T /sys/fs/cgroup` is `cgroup2fs`, the CPU does not report the
-`hypervisor` flag, and the page cache can be dropped (root or passwordless
-sudo). `--dry-run` bypasses the gate; such results are suffixed `-dryrun`,
-flagged in `manifest.json` and `runs.csv`, and `analysis/analyze.py` refuses
-them unless `--allow-dry-run` (then every figure and table is watermarked).
+**Hosts (changed 2026-10-31).** Primary: AWS EC2 `c6id.4xlarge` On-Demand
+(8 physical cores × 2 SMT, Xeon Platinum 8375C, 32 GiB, 950 GB NVMe instance
+store, Ubuntu 24.04). Validation: `c6id.metal`, small preset only. The
+laptop/hybrid-CPU route is dropped. Operational guide: `docs/aws.md`.
+
+**Host gates (`--host-class`; `bench/hostinfo.py: evaluate_gates`, unit-tested
+in `bench/tests/test_hostinfo.py`).**
+- **Both classes:** Linux, `cgroup2fs`, and the page cache can be dropped
+  (root, or the sudoers rule for `/usr/sbin/sysctl vm.drop_caches=3` that
+  `scripts/ec2-setup.sh` installs). On EC2, a Spot instance is refused unless
+  `--allow-spot`; such results are suffixed `-smoke` and watermarked SMOKE
+  TEST.
+- **`bare-metal`:** no `hypervisor` CPU flag. `c6id.metal` passes this gate
+  unchanged and is recorded as `host_class=bare-metal` with its EC2 identity.
+- **`cloud-vm`:** EC2 detected via IMDSv2, instance type in the allowlist
+  (`c6id.4xlarge`, `c6id.metal`), and the data directory on "Amazon EC2 NVMe
+  Instance Storage". The storage check follows partitions, dm and md down to
+  the disk model; EBS and mixed devices are refused.
+
+`--dry-run` bypasses the gates; such results are suffixed `-dryrun`, flagged
+in `manifest.json` and `runs.csv`, and the analysis refuses them unless
+`--allow-dry-run` (then every figure and table is watermarked).
+`make aws-preflight` reports every gate for both classes without running
+anything.
+
+**VM noise controls.** Per run, CPU steal on the pinned cores (`/proc/stat`,
+10 Hz series plus start/end totals) and observed MHz (`/proc/cpuinfo`).
+Runs with steal > `protocol.steal_flag_fraction` (0.5%) of their CPU time are
+flagged. The analysis reports flagged counts per configuration and a
+sensitivity table excluding them. N = `hosts.cloud_vm.runs` (20) per
+configuration on `cloud-vm`, versus 10 on `bare-metal`. The heap sweep's
+per-point N follows the same default. The coefficient of variation is in
+`table_runtime`. Governor and turbo are recorded as "unavailable" when not
+exposed.
+
+**VM vs metal.** `make compare-hosts` takes the c6id.4xlarge and c6id.metal
+small-preset results. For each configuration it reports the ratio to
+`rust-system` (CPU-seconds, M_peak, p99 per-unit latency) on both hosts, with
+95% bootstrap CIs (runs resampled), plus the VM/metal ratio-of-ratios.
 
 **Memory (10 Hz host sampler, `bench/sampler.py`).** Each sample records
 `memory.current`, `memory.peak`, `memory.stat` (`anon`, `file`, `kernel`,
@@ -244,15 +277,15 @@ every run's `output.parquet` is checked bit-identical.
 
 | Experiment | Preset | Target |
 |---|---|---|
-| Calibration (`make calibrate`) | small | 1 rust-system + 1 scala-g1 (3 GiB) run; prints projected totals for bench small/full, heap sweep and validation. Run first on the host; starts nothing long. |
+| Calibration (`make calibrate`) | small | 1 rust-system + 1 scala-g1 (3 GiB) run; prints projected totals for bench small/medium, heap sweep and validation. Run first on the host; starts nothing long. |
 | Heap sweep (`make heapsweep`) | **small** (10 M rows) | H_min, reserves, CPU/M_peak vs heap multiple |
-| H_min validation (`make heapsweep-validate`) | **full** (950 M rows) | per collector, 3 attempts each at the small-preset H_min and at ⌈1.25 × H_min⌉, all attempts run |
-| Production-style comparison (`make bench`) | **full** (950 M rows) | headline CPU, wall, M_peak, latency, GC, cost |
+| H_min validation (`make heapsweep-validate`) | **medium** (95 M rows, ≈100.7 GB) | per collector, 3 attempts each at the small-preset H_min and at ⌈1.25 × H_min⌉, all attempts run |
+| Production-style comparison (`make bench`) | **medium** (95 M rows); plus small on c6id.4xlarge and c6id.metal for `make compare-hosts` | headline CPU, wall, M_peak, latency, GC, cost |
 
 Rationale: the workload streams with bounded state (720 hourly groups,
 4 workers × one row group in flight), so H_min should not depend on dataset
 size. That assumption is *tested*, not assumed: validation passes only if
-both probes complete 3/3 on the full preset. Any disagreement is reported
+both probes complete 3/3 on the medium preset. Any disagreement is reported
 as a finding (and the sweep's H_min must then be qualified as
 small-preset-specific).
 
@@ -346,6 +379,23 @@ booktabs LaTeX tables.
   - Wall time moved from the realtime clock to `/proc/uptime` after the
     calibration dry run showed a VM clock step (realtime 12.45 s vs uptime
     10.89 s for the same run).
+
+- **2026-10-31 — AWS milestone** (branch `cat`; dry runs only, *no
+  performance numbers recorded*):
+  - Host classes `bare-metal` / `cloud-vm` with IMDSv2, allowlist,
+    instance-store and Spot gates; 19 unit tests, including c6id.metal
+    passing as bare-metal.
+  - Steal and MHz sampling, steal flagging and sensitivity table, CV in
+    tables, N = 20 on cloud-vm.
+  - `scripts/ec2-setup.sh`: shellcheck-clean. The instance-store logic was
+    tested against loop devices in a privileged Ubuntu 24.04 container
+    (`tests/ec2-setup-storage.sh`): format blank, idempotent re-run, no
+    reformat of existing ext4, wiped disk → reformat + fstab replaced,
+    foreign filesystem refused, root device refused.
+  - `make aws-preflight`, `export-results`, `compare-hosts`; medium preset
+    (95 M rows, ≈100.7 GB) added to datagen.
+  - Fixed during dry runs: bind-mount sources (`/dev/sde[/subpath]`)
+    misparsed as device `subpath]`.
 
 ## 11. Order of work
 
