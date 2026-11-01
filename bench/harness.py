@@ -34,7 +34,7 @@ RUN_COLUMNS = [
     "peak_kernel_bytes", "peak_current_bytes", "memory_peak_bytes", "samples",
     "rows_read", "rows_kept", "groups",
     "gc_count", "gc_pause_count", "gc_pause_total_ns", "gc_pause_max_ns", "gc_duration_total_ns",
-    "z_alloc_stall_total_ns", "heap_used_max", "heap_committed_max",
+    "z_alloc_stall_total_ns", "heap_used_max", "heap_committed_max", "jdk_version",
     "nmt_total_committed_bytes", "nmt_heap_committed_bytes",
     "steal_usec", "steal_fraction", "steal_flagged", "cpu_mhz_mean", "cpu_mhz_min", "cpu_mhz_max",
 ]
@@ -146,6 +146,38 @@ def dataset_info(path: Path) -> dict:
     }
 
 
+def image_toolchains(cfg: dict) -> dict:
+    """Toolchain versions read from INSIDE the benchmark images (not from the host)."""
+    out: dict = {}
+    scala = cfg["images"].get("scala")
+    if scala:
+        res = subprocess.run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "java", scala,
+                              "-XshowSettings:properties", "-version"], capture_output=True, text=True)
+        text = res.stderr  # the JVM prints settings and -version to stderr
+        props = dict(m.groups() for m in re.finditer(r"^\s+(java\.[\w.]+) = (.*)$", text, re.M))
+        out["scala"] = {
+            "image": scala,
+            "java.runtime.version": props.get("java.runtime.version"),
+            "java.vendor.version": props.get("java.vendor.version"),
+            "java.vm.version": props.get("java.vm.version"),
+            "java_version_output": "\n".join(l for l in text.splitlines() if not l.startswith((" ", "\t"))
+                                             and l.strip() and not l.startswith("Property settings")),
+        }
+    rust = cfg["images"].get("rust")
+    if rust:
+        res = subprocess.run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "cat", rust,
+                              "/usr/local/share/rvj/toolchain.txt"], capture_output=True, text=True)
+        lines = res.stdout.splitlines()
+        out["rust"] = {
+            "image": rust,
+            "rustc_version": next((l for l in lines if l.startswith("rustc ")), None),
+            "cargo_version": next((l for l in lines if l.startswith("cargo ")), None),
+            "rustc_vV": res.stdout if res.returncode == 0 else None,
+            "error": res.stderr.strip() or None if res.returncode else None,
+        }
+    return out
+
+
 def base_manifest(cfg: dict, ctx: HostContext, stamp: str, data: dict) -> dict:
     return {
         "schema": 3,
@@ -160,6 +192,7 @@ def base_manifest(cfg: dict, ctx: HostContext, stamp: str, data: dict) -> dict:
         "git": hostinfo.git_section(REPO),
         "host": hostinfo.host_section(),
         "docker": hostinfo.docker_section(cfg["images"]),
+        "image_toolchains": image_toolchains(cfg),
         "cpuset": {"cpus": ctx.cpuset, "source": ctx.cpuset_source,
                    "thread_siblings": hostinfo.thread_siblings(ctx.cpus)},
         "drop_caches_effective": ctx.drop,
@@ -371,9 +404,7 @@ def parse_jfr(cfg: dict, run_dir: Path) -> dict:
         log(f"WARNING: jfr print failed for {run_dir.name}: {res.stderr.strip()[:200]}")
         return {}
     (run_dir / "gc.json").write_text(res.stdout)
-    totals = jfrparse.convert(run_dir / "gc.json", run_dir)
-    totals.pop("jvm_version", None)
-    return totals
+    return jfrparse.convert(run_dir / "gc.json", run_dir)
 
 
 def write_csv(path: Path, rows: list[dict], columns: list[str]) -> None:

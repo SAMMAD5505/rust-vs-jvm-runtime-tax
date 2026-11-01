@@ -11,6 +11,16 @@ git-ignored and are archived alongside the paper instead
   AZ, AMI, lifecycle) and `data_storage` (device, filesystem, disk models)
 - `gates`: the facts and any blockers a dry run ignored
 - `cpuset.thread_siblings`
+- `image_toolchains`: read from inside the images at bench start, not from
+  the host:
+  - `scala`: `java.runtime.version`, `java.vendor.version` and the
+    `java -version` output
+  - `rust`: `rustc_version` and `cargo_version` from
+    `/usr/local/share/rvj/toolchain.txt`, which the image build writes after
+    asserting rustc/cargo 1.81.0
+
+  Both image builds fail unless the toolchain is exactly the pinned one
+  (Temurin-21.0.4+7; rustc/cargo 1.81.0).
 - `clock_start` / `clock_end` / `clock_realtime_drift_ns`
 
 `make compare-hosts` writes `results/compare-<vm>-vs-<metal>/`:
@@ -87,6 +97,7 @@ projected totals.
 | `rows_read`, `rows_kept`, `groups` | from `summary.json` |
 | `gc_count`, `gc_pause_count`, `gc_pause_total_ns`, `gc_pause_max_ns`, `gc_duration_total_ns`, `z_alloc_stall_total_ns` | from JFR (`jdk.GarbageCollection`, `jdk.GCPhasePause`, `jdk.ZAllocationStall`); `gc_duration_total_ns` = Σ GC-cycle durations (wall, incl. concurrent phases) |
 | `heap_used_max`, `heap_committed_max` | from JFR `jdk.GCHeapSummary` |
+| `jdk_version` | JVM runs: runtime version from JFR `jdk.JVMInformation` (e.g. `21.0.4+7-LTS`). The analysis exits if it differs across runs or from `image_toolchains.scala.java.runtime.version`. |
 | `nmt_total_committed_bytes`, `nmt_heap_committed_bytes` | NMT runs only |
 | `steal_usec`, `steal_fraction`, `steal_flagged` | CPU steal on the pinned cores over the run (`/proc/stat`); fraction = steal ÷ run CPU time; flagged above `protocol.steal_flag_fraction` (0.5%) |
 | `cpu_mhz_mean`, `cpu_mhz_min`, `cpu_mhz_max` | observed MHz of the pinned cores from 10 Hz `/proc/cpuinfo` samples |

@@ -105,7 +105,22 @@ def load(results: Path, allow_dry_run: bool):
     for col in ("dry_run", "steal_flagged"):
         if col in runs:
             runs[col] = runs[col].astype(str).str.lower() == "true"
+    check_jdk_versions(results, manifest, runs)
     return manifest, runs
+
+
+def check_jdk_versions(results: Path, manifest: dict, runs: pd.DataFrame) -> None:
+    """Exit if JVM runs in one results directory did not all run the same JDK build
+    (per-run JFR jdk.JVMInformation), or if it differs from the version read from the
+    image at bench start (manifest image_toolchains)."""
+    if "jdk_version" not in runs:
+        return
+    seen = sorted(runs["jdk_version"].dropna().astype(str).unique())
+    if len(seen) > 1:
+        sys.exit(f"{results}: JDK versions differ across runs: {seen}")
+    expected = ((manifest.get("image_toolchains") or {}).get("scala") or {}).get("java.runtime.version")
+    if seen and expected and seen[0] != expected:
+        sys.exit(f"{results}: runs report JDK {seen[0]} but the image reported {expected} at bench start")
 
 
 def watermark(manifest: dict) -> str | None:

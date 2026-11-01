@@ -93,6 +93,11 @@ def main() -> int:
     if vm["preset"] != metal["preset"] and not args.allow_preset_mismatch:
         sys.exit(f"preset mismatch: VM {vm['preset']!r} vs metal {metal['preset']!r} "
                  "(compare the same preset; pass --allow-preset-mismatch to override)")
+    for side, key in (("scala", "java.runtime.version"), ("rust", "rustc_version")):
+        a = ((vm["manifest"].get("image_toolchains") or {}).get(side) or {}).get(key)
+        b = ((metal["manifest"].get("image_toolchains") or {}).get(side) or {}).get(key)
+        if a != b:
+            sys.exit(f"toolchain mismatch between hosts: {side} {key} VM={a!r} metal={b!r}")
     mark = vm["mark"] or metal["mark"]
     out = args.out or args.vm.parent / f"compare-{args.vm.name}-vs-{args.metal.name}"
     out.mkdir(parents=True, exist_ok=True)

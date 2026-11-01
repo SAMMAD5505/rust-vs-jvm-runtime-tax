@@ -88,5 +88,13 @@ def convert(json_path: Path, out_dir: Path) -> dict:
         "z_alloc_stall_total_ns": sum(stalls),
         "heap_used_max": max((h["heap_used"] for h in heap), default=None),
         "heap_committed_max": max((h["heap_committed"] for h in heap), default=None),
-        "jvm_version": jvm.get("jvmVersion") if jvm else None,
+        # jdk.JVMInformation.jvmVersion, e.g. "OpenJDK 64-Bit Server VM (21.0.4+7-LTS) for linux-amd64
+        # JRE (21.0.4+7-LTS), built on ..."; jdk_version is the runtime version in the first parentheses
+        # (= java.runtime.version), checked for consistency by the analysis.
+        "jdk_version": jdk_version(jvm.get("jvmVersion")) if jvm else None,
     }
+
+
+def jdk_version(jvm_version: str | None) -> str | None:
+    m = re.search(r"\(([^)]+)\)", jvm_version or "")
+    return m.group(1) if m else None

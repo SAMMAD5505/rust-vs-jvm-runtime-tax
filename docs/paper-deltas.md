@@ -29,7 +29,7 @@ Status key: **MUST** = paper is currently wrong or incomplete;
 | A2 | ADD | — (no JVM library named) | parquet-java (`parquet-hadoop`) **1.14.4**, `hadoop-client-api`/`hadoop-client-runtime` **3.3.6** (shaded), `slf4j-nop` 2.0.16 | "…reads Parquet via parquet-java 1.14.4 with `LocalInputFile`; Hadoop 3.3.6 shaded client jars supply configuration classes only…" |
 | A3 | OK | rustc 1.81.0, `--release`, `opt-level = 3` | same, **plus** `lto = "fat"`, `codegen-units = 1`, `panic = "abort"` | add the three extra profile settings |
 | A4 | OK | Scala 3.5.0, JDK 21.0.4 | Scala 3.5.0, Temurin 21.0.4+7, sbt 1.10.2, sbt-assembly 2.2.0 | name the Temurin build and the build tools |
-| A5 | ADD | — | base images pinned by digest (see `docker/*.Dockerfile`) | one sentence + artifact DOI |
+| A5 | ADD | — | base images pinned by digest (see `docker/*.Dockerfile`). The image builds fail unless the JDK is exactly Temurin-21.0.4+7 and rustc/cargo are 1.81.0. Each results directory records the versions read from inside the images, and every JVM run's JDK version from JFR (the analysis refuses mixed versions). | one sentence + artifact DOI |
 
 ## B. Configurations (§II-B)
 
